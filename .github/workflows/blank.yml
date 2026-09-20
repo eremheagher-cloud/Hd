@@ -1,3 +1,32 @@
+name: Windows 11 ARM64 - RDP + Tailscale + 400GB
+
+on:
+  workflow_dispatch:
+    inputs:
+      instance_number:
+        description: "Número da instância (1-10)"
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-rdp:
+
+    # Runner ARM64
+    runs-on: windows-11-vs2026-arm
+
+    timeout-minutes: 360
+
+    env:
+      TS_HOSTNAME: enigmano${{ github.event.inputs.instance_number }}
+      RDP_USER: Rafael
+      RDP_PASSWORD: rafael34
+
+    steps:
+
       # ==========================================
       # TENTAR EXPANDIR C: PARA 400 GB
       # ==========================================
@@ -17,15 +46,26 @@
             exit 1
           }
 
-          $beforeGB = [math]::Round($disk.Size / 1GB, 2)
+          $beforeGB = [math]::Round(
+            $disk.Size / 1GB,
+            2
+          )
 
-          Write-Host "Tamanho atual: $beforeGB GB"
+          Write-Host ""
+          Write-Host "Tamanho atual do C:: $beforeGB GB"
+          Write-Host ""
 
-          if ($beforeGB -ge 400) {
+          # Se já tiver 400 GB, não precisa alterar nada.
+          if ($disk.Size -ge 400GB) {
+
             Write-Host "OK: C: já possui pelo menos 400 GB."
+
           }
           else {
-            Write-Host "Tentando localizar espaço expansível..."
+
+            Write-Host "C: possui menos de 400 GB."
+            Write-Host "Procurando espaço não alocado disponível..."
+            Write-Host ""
 
             $partition = Get-Partition `
               -DriveLetter C `
@@ -41,42 +81,85 @@
               -ErrorAction SilentlyContinue
 
             if ($null -eq $supported) {
-              Write-Host "ERRO: não foi possível determinar o tamanho máximo suportado."
+              Write-Host "ERRO: não foi possível determinar o tamanho expansível."
               exit 1
             }
 
-            $maxGB = [math]::Round($supported.SizeMax / 1GB, 2)
+            $currentSupportedGB = [math]::Round(
+              $supported.SizeMin / 1GB,
+              2
+            )
 
-            Write-Host "Tamanho máximo suportado pela partição: $maxGB GB"
+            $maximumGB = [math]::Round(
+              $supported.SizeMax / 1GB,
+              2
+            )
+
+            Write-Host "Tamanho atual: $beforeGB GB"
+            Write-Host "Máximo suportado pela partição: $maximumGB GB"
+            Write-Host ""
 
             $targetBytes = 400GB
 
             if ($supported.SizeMax -ge $targetBytes) {
 
-              Write-Host "Espaço disponível para expansão."
+              Write-Host "Espaço suficiente encontrado."
               Write-Host "Expandindo C: para 400 GB..."
+              Write-Host ""
 
-              Resize-Partition `
-                -DriveLetter C `
-                -Size $targetBytes `
-                -ErrorAction Stop
+              try {
 
-              Start-Sleep -Seconds 5
+                Resize-Partition `
+                  -DriveLetter C `
+                  -Size $targetBytes `
+                  -ErrorAction Stop
 
-              Write-Host "Expansão concluída."
+                Write-Host "Expansão executada com sucesso."
+
+              }
+              catch {
+
+                Write-Host ""
+                Write-Host "ERRO ao expandir C:."
+                Write-Host $_.Exception.Message
+                exit 1
+              }
 
             }
             else {
+
               Write-Host ""
-              Write-Host "ERRO: o disco físico não possui espaço suficiente."
+              Write-Host "=========================================="
+              Write-Host " NÃO HÁ ESPAÇO PARA 400 GB"
+              Write-Host "=========================================="
+
+              Write-Host ""
               Write-Host "Tamanho atual: $beforeGB GB"
-              Write-Host "Máximo suportado: $maxGB GB"
+              Write-Host "Máximo suportado: $maximumGB GB"
               Write-Host "Necessário: 400 GB"
               Write-Host ""
-              Write-Host "O runner precisa ser provisionado com armazenamento maior."
+
+              Write-Host "O runner não possui espaço não alocado"
+              Write-Host "suficiente para aumentar a partição C:."
+              Write-Host ""
+
               exit 1
             }
           }
+
+          Start-Sleep -Seconds 5
+
+          $diskAfter = Get-CimInstance Win32_LogicalDisk `
+            -Filter "DeviceID='C:'"
+
+          $afterGB = [math]::Round(
+            $diskAfter.Size / 1GB,
+            2
+          )
+
+          Write-Host ""
+          Write-Host "Tamanho do C: após tentativa: $afterGB GB"
+          Write-Host ""
 
       # ==========================================
       # VERIFICAR WINDOWS / ARM64 / 400 GB
@@ -102,8 +185,15 @@
             exit 1
           }
 
-          $totalGB = [math]::Round($disk.Size / 1GB, 2)
-          $freeGB = [math]::Round($disk.FreeSpace / 1GB, 2)
+          $totalGB = [math]::Round(
+            $disk.Size / 1GB,
+            2
+          )
+
+          $freeGB = [math]::Round(
+            $disk.FreeSpace / 1GB,
+            2
+          )
 
           Write-Host ""
           Write-Host "Sistema: $($os.Caption)"
@@ -135,3 +225,334 @@
           Write-Host "OK: Windows 11 detectado."
           Write-Host "OK: ARM64 detectado."
           Write-Host "OK: armazenamento de pelo menos 400 GB."
+
+      # ==========================================
+      # CONFIGURAR RDP
+      # ==========================================
+
+      - name: Configurar RDP
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host " CONFIGURANDO RDP"
+          Write-Host "=========================================="
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 0
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "SecurityLayer" `
+            -Value 0
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "PortNumber" `
+            -Value 3389
+
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
+
+          New-NetFirewallRule `
+            -DisplayName "RDP TCP 3389" `
+            -Direction Inbound `
+            -Protocol TCP `
+            -LocalPort 3389 `
+            -Action Allow `
+            -ErrorAction SilentlyContinue
+
+          New-NetFirewallRule `
+            -DisplayName "RDP UDP 3389" `
+            -Direction Inbound `
+            -Protocol UDP `
+            -LocalPort 3389 `
+            -Action Allow `
+            -ErrorAction SilentlyContinue
+
+          Set-Service `
+            -Name TermService `
+            -StartupType Automatic
+
+          Start-Service `
+            -Name TermService `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "RDP configurado."
+
+      # ==========================================
+      # USUÁRIO RAFAEL
+      # ==========================================
+
+      - name: Configurar usuário Rafael
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host " CONFIGURANDO USUÁRIO RAFAEL"
+          Write-Host "=========================================="
+
+          $password = ConvertTo-SecureString `
+            $env:RDP_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $user = Get-LocalUser `
+            -Name $env:RDP_USER `
+            -ErrorAction SilentlyContinue
+
+          if ($null -eq $user) {
+
+            New-LocalUser `
+              -Name $env:RDP_USER `
+              -Password $password `
+              -FullName "Rafael" `
+              -Description "Usuário RDP"
+
+          }
+          else {
+
+            Set-LocalUser `
+              -Name $env:RDP_USER `
+              -Password $password
+          }
+
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member $env:RDP_USER `
+            -ErrorAction SilentlyContinue
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $env:RDP_USER `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "Usuário Rafael configurado."
+
+      # ==========================================
+      # WINDOWS DESKTOP
+      # ==========================================
+
+      - name: Configurar Windows Desktop
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host " CONFIGURANDO WINDOWS DESKTOP"
+          Write-Host "=========================================="
+
+          $winlogon = `
+            "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+
+          Set-ItemProperty `
+            -Path $winlogon `
+            -Name "Shell" `
+            -Value "explorer.exe"
+
+          Set-ItemProperty `
+            -Path $winlogon `
+            -Name "Userinit" `
+            -Value "C:\Windows\System32\userinit.exe,"
+
+          Write-Host "Explorer configurado como shell."
+
+      # ==========================================
+      # TAILSCALE
+      # ==========================================
+
+      - name: Conectar Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          version: latest
+          use-cache: true
+          hostname: ${{ env.TS_HOSTNAME }}
+
+      # ==========================================
+      # CONFIGURAR TAILSCALE
+      # ==========================================
+
+      - name: Configurar Tailscale
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host " CONFIGURANDO TAILSCALE"
+          Write-Host "=========================================="
+
+          $tailscale = Get-Command tailscale `
+            -ErrorAction SilentlyContinue
+
+          if ($null -eq $tailscale) {
+            Write-Host "ERRO: Tailscale não encontrado."
+            exit 1
+          }
+
+          tailscale set `
+            --hostname="$env:TS_HOSTNAME"
+
+          Start-Sleep -Seconds 5
+
+          $ip = tailscale ip -4
+
+          if ([string]::IsNullOrWhiteSpace($ip)) {
+            Write-Host "ERRO: não foi possível obter o IP Tailscale."
+            tailscale status
+            exit 1
+          }
+
+          $ip = $ip.Trim()
+
+          "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "Hostname: $env:TS_HOSTNAME"
+          Write-Host "IP Tailscale: $ip"
+
+      # ==========================================
+      # DATA E HORA
+      # ==========================================
+
+      - name: Configurar data e hora
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host " CONFIGURANDO DATA E HORA"
+          Write-Host "=========================================="
+
+          tzutil /s "E. South America Standard Time"
+
+          Set-Service W32Time `
+            -StartupType Automatic `
+            -ErrorAction SilentlyContinue
+
+          Start-Service W32Time `
+            -ErrorAction SilentlyContinue
+
+          w32tm /config `
+            /manualpeerlist:"time.windows.com" `
+            /syncfromflags:manual `
+            /update
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Aviso: configuração do W32Time retornou código $LASTEXITCODE."
+          }
+
+          Restart-Service W32Time `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          Start-Sleep -Seconds 3
+
+          w32tm /resync /force
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Aviso: sincronização inicial não foi concluída."
+          }
+
+          Write-Host ""
+          Write-Host "Fuso horário:"
+          tzutil /g
+
+          Write-Host ""
+          Write-Host "Data e hora:"
+          Get-Date
+
+      # ==========================================
+      # MOSTRAR VERSÃO FINAL
+      # ==========================================
+
+      - name: Mostrar versão final
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host " INFORMAÇÕES FINAIS"
+          Write-Host "=========================================="
+
+          $os = Get-CimInstance Win32_OperatingSystem
+
+          $version = Get-ItemProperty `
+            "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+
+          $disk = Get-CimInstance Win32_LogicalDisk `
+            -Filter "DeviceID='C:'"
+
+          $totalGB = [math]::Round(
+            $disk.Size / 1GB,
+            2
+          )
+
+          $freeGB = [math]::Round(
+            $disk.FreeSpace / 1GB,
+            2
+          )
+
+          Write-Host ""
+          Write-Host "Windows: $($os.Caption)"
+          Write-Host "DisplayVersion: $($version.DisplayVersion)"
+          Write-Host "Build: $($os.BuildNumber)"
+          Write-Host "Arquitetura: $env:PROCESSOR_ARCHITECTURE"
+          Write-Host "Disco total: $totalGB GB"
+          Write-Host "Disco livre: $freeGB GB"
+          Write-Host ""
+
+          Write-Host "Tailscale:"
+          tailscale status
+
+      # ==========================================
+      # DADOS RDP
+      # ==========================================
+
+      - name: Mostrar dados do RDP
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host " DADOS PARA CONEXÃO RDP"
+          Write-Host "=========================================="
+
+          Write-Host "IP Tailscale: $env:TAILSCALE_IP"
+          Write-Host "Hostname: $env:TS_HOSTNAME"
+          Write-Host "Porta: 3389"
+          Write-Host "Usuário: $env:RDP_USER"
+          Write-Host ""
+          Write-Host "Use o IP Tailscale no Microsoft Windows App."
+
+      # ==========================================
+      # MANTER RUNNER ATIVO
+      # ==========================================
+
+      - name: Manter runner ativo
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host " RDP ATIVO - 400 GB"
+          Write-Host "=========================================="
+
+          Write-Host "IP Tailscale: $env:TAILSCALE_IP"
+          Write-Host "Hostname: $env:TS_HOSTNAME"
+          Write-Host "Usuário: $env:RDP_USER"
+          Write-Host "Porta RDP: 3389"
+
+          $counter = 0
+
+          while ($true) {
+
+            $counter++
+
+            Write-Host ""
+            Write-Host "Session active - Heartbeat #$counter - IP=$env:TAILSCALE_IP"
+
+            try {
+              tailscale status
+            }
+            catch {
+              Write-Host "Não foi possível consultar o Tailscale."
+            }
+
+            Start-Sleep -Seconds 30
+          }
